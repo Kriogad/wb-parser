@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Парсер цен Wildberries для облачного запуска (headless Chrome).
+Парсер цен Wildberries для GitHub Codespaces (использует системный ChromeDriver).
 Читает артикулы из articles.xlsx, сохраняет результат в Excel.
-Многопоточность с предварительной установкой драйвера.
+Многопоточность, headless-режим.
 """
 
 import os
@@ -19,21 +19,18 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-from webdriver_manager.chrome import ChromeDriverManager
-
 # ======================== НАСТРОЙКИ ========================
-INPUT_FILE = "articles.xlsx"          # файл с артикулами (колонка "Артикул")
+INPUT_FILE = "articles.xlsx"               # файл с артикулами (колонка "Артикул")
 OUTPUT_FILE = f"prices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-MAX_WORKERS = 5                       # количество параллельных потоков
-HEADLESS = True                       # True для сервера
-PAGE_LOAD_TIMEOUT = 20                 # таймаут загрузки страницы
+MAX_WORKERS = 5                            # количество потоков
+HEADLESS = True                             # True для сервера
+PAGE_LOAD_TIMEOUT = 20                       # таймаут загрузки страницы
 # ============================================================
 
-def create_driver(service):
-    """Создаёт headless Chrome с использованием готового service."""
+def create_driver():
+    """Создаёт headless Chrome (драйвер должен быть в PATH)."""
     chrome_options = Options()
     
     if HEADLESS:
@@ -46,10 +43,9 @@ def create_driver(service):
     chrome_options.add_argument("--disable-web-security")
     chrome_options.add_argument("--ignore-certificate-errors")
     chrome_options.add_argument("--ignore-ssl-errors")
-    
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(options=chrome_options)
     driver.implicitly_wait(10)
     return driver
 
@@ -113,12 +109,12 @@ def extract_brand(driver):
             continue
     return None
 
-def process_article(article, service):
-    """Обрабатывает один артикул с переданным service."""
+def process_article(article):
+    """Обрабатывает один артикул."""
     url = f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
     print(f"    [Арт. {article}] Загружаю...")
     
-    driver = create_driver(service)
+    driver = create_driver()
     try:
         driver.get(url)
         
@@ -151,7 +147,7 @@ def process_article(article, service):
         driver.quit()
 
 def main():
-    print(f"🚀 Запуск парсера для 300 артикулов (многопоточность, {MAX_WORKERS} потоков)")
+    print("🚀 Запуск парсера (используется системный ChromeDriver)")
     
     if not os.path.exists(INPUT_FILE):
         print(f"❌ Файл {INPUT_FILE} не найден. Создай его с колонкой 'Артикул'.")
@@ -165,15 +161,9 @@ def main():
     articles = df_in['Артикул'].tolist()
     print(f"📥 Загружено {len(articles)} артикулов.")
     
-    # Устанавливаем драйвер один раз перед многопоточностью
-    print("🔄 Устанавливаю ChromeDriver...")
-    driver_path = ChromeDriverManager().install()
-    service = Service(driver_path)
-    print("✅ Драйвер готов.")
-    
     results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_article = {executor.submit(process_article, art, service): art for art in articles}
+        future_to_article = {executor.submit(process_article, art): art for art in articles}
         for future in as_completed(future_to_article):
             result = future.result()
             if result:
