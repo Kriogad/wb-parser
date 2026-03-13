@@ -4,7 +4,7 @@
 """
 Парсер цен Wildberries для облачного запуска (headless Chrome).
 Читает артикулы из articles.xlsx, сохраняет результат в Excel.
-Использует многопоточность для ускорения.
+Многопоточность с предварительной установкой драйвера.
 """
 
 import os
@@ -25,23 +25,21 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ======================== НАСТРОЙКИ ========================
-INPUT_FILE = "articles.xlsx"          # файл с артикулами (должен содержать колонку "Артикул")
+INPUT_FILE = "articles.xlsx"          # файл с артикулами (колонка "Артикул")
 OUTPUT_FILE = f"prices_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-MAX_WORKERS = 5                       # количество параллельных потоков (не больше 5, чтобы не заблокировали)
-HEADLESS = True                       # True для сервера, False для отладки с окном браузера
+MAX_WORKERS = 5                       # количество параллельных потоков
+HEADLESS = True                       # True для сервера
 PAGE_LOAD_TIMEOUT = 20                 # таймаут загрузки страницы
 # ============================================================
 
-def create_driver():
-    """Создаёт headless Chrome с настройками."""
+def create_driver(service):
+    """Создаёт headless Chrome с использованием готового service."""
     chrome_options = Options()
     
-    # Headless-режим (без графического интерфейса)
     if HEADLESS:
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--disable-gpu")
     
-    # Обязательные опции для стабильной работы на сервере
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -49,17 +47,14 @@ def create_driver():
     chrome_options.add_argument("--ignore-certificate-errors")
     chrome_options.add_argument("--ignore-ssl-errors")
     
-    # User-Agent как у реального пользователя
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # Автоматическая загрузка драйвера
-    service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.implicitly_wait(10)
     return driver
 
 def extract_price(driver):
-    """Извлекает цену из DOM."""
+    """Извлекает цену."""
     selectors = [
         "ins.price-block__final-price",
         "span.final-price",
@@ -77,7 +72,6 @@ def extract_price(driver):
                 return float(cleaned)
         except NoSuchElementException:
             continue
-    # Мета-тег
     try:
         meta_price = driver.find_element(By.CSS_SELECTOR, "meta[itemprop='price']")
         content = meta_price.get_attribute("content")
@@ -119,16 +113,15 @@ def extract_brand(driver):
             continue
     return None
 
-def process_article(article):
-    """Обрабатывает один артикул: открывает страницу, собирает данные."""
+def process_article(article, service):
+    """Обрабатывает один артикул с переданным service."""
     url = f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
     print(f"    [Арт. {article}] Загружаю...")
     
-    driver = create_driver()
+    driver = create_driver(service)
     try:
         driver.get(url)
         
-        # Ждём загрузки
         try:
             WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "ins.price-block__final-price, span.final-price, .product-page__title"))
@@ -160,7 +153,6 @@ def process_article(article):
 def main():
     print(f"🚀 Запуск парсера для 300 артикулов (многопоточность, {MAX_WORKERS} потоков)")
     
-    # Читаем артикулы из Excel
     if not os.path.exists(INPUT_FILE):
         print(f"❌ Файл {INPUT_FILE} не найден. Создай его с колонкой 'Артикул'.")
         return
@@ -173,15 +165,20 @@ def main():
     articles = df_in['Артикул'].tolist()
     print(f"📥 Загружено {len(articles)} артикулов.")
     
+    # Устанавливаем драйвер один раз перед многопоточностью
+    print("🔄 Устанавливаю ChromeDriver...")
+    driver_path = ChromeDriverManager().install()
+    service = Service(driver_path)
+    print("✅ Драйвер готов.")
+    
     results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_article = {executor.submit(process_article, art): art for art in articles}
+        future_to_article = {executor.submit(process_article, art, service): art for art in articles}
         for future in as_completed(future_to_article):
             result = future.result()
             if result:
                 results.append(result)
     
-    # Сохраняем результаты
     df_out = pd.DataFrame(results)
     df_out.to_excel(OUTPUT_FILE, index=False)
     print(f"✅ Готово! Сохранено {len(results)} записей в файл {OUTPUT_FILE}")
